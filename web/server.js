@@ -11,7 +11,7 @@ let pluginSocket = null;
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   try {
-    let file = url.pathname === '/' ? '/index.html' : url.pathname;
+    let file = url.pathname === '/' || url.pathname.startsWith('/v/') ? '/index.html' : url.pathname;
     if (file.startsWith('/?')) file = '/index.html';
     const content = await readFile(new URL(`./public${file}`, import.meta.url));
     const ext = file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html';
@@ -32,7 +32,7 @@ server.on('upgrade', (req, socket, head) => {
   }
   wss.handleUpgrade(req, socket, head, ws => {
     ws.role = url.pathname === '/ws/plugin' ? 'plugin' : 'client';
-    ws.token = url.searchParams.get('token');
+  ws.token = url.searchParams.get("token") || url.pathname.split("/")[2];
     wss.emit('connection', ws, req);
   });
 });

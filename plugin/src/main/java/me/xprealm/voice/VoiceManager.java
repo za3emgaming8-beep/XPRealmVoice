@@ -74,7 +74,8 @@ public final class VoiceManager {
             return;
         }
         UUID id = player.getUniqueId();
-        VoiceSession session = sessions.computeIfAbsent(id, u -> new VoiceSession(u, UUID.randomUUID().toString().replace("-", "")));
+        VoiceSession session = sessions.computeIfAbsent(id, u -> new VoiceSession(u, u.toString().replace("-", "").substring(0, 8)));
+        session.enabled = true;
 
         if (session.bedrockToJavaChannel == null || session.bedrockToJavaChannel.isClosed()) {
             session.bedrockToJavaChannel = svc.createLocationalAudioChannel(
@@ -95,7 +96,7 @@ public final class VoiceManager {
 
         bridge.registerSession(session, player.getName());
         player.sendMessage("§b§lXPRealm Voice §7» §fUse the button below to join:");
-        String url = plugin.getConfig().getString("web.public-url", "https://voice.xprealm.minecraft.how") + "/?token=" + session.token;
+        String url = plugin.getConfig().getString("web.public-url", "https://voice.xprealm.minecraft.how") + "/v/" + session.token;
         player.sendMessage("§n§b" + url);
     }
 
@@ -122,6 +123,7 @@ public final class VoiceManager {
 
     public void stopVoice(UUID id) {
         VoiceSession s = sessions.remove(id);
+        if (s != null) s.enabled = false;
         if (s == null) return;
         if (s.bedrockToJavaChannel != null) s.bedrockToJavaChannel.flush();
         if (s.encoder != null) s.encoder.close();
