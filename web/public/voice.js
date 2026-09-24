@@ -36,7 +36,7 @@ async function enableMic(){
   await audioContext.resume();
   micStream = await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
   micSource = audioContext.createMediaStreamSource(micStream);
-  processor = audioContext.createScriptProcessor(960,1,1);
+  processor = audioContext.createScriptProcessor(1024,1,1);
   processor.onaudioprocess = e => {
     if (muted || !ws || ws.readyState !== 1) return;
     const input = e.inputBuffer.getChannelData(0);
