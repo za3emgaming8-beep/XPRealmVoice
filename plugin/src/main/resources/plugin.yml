@@ -1,0 +1,17 @@
+name: XPRealmVoice
+version: ${version}
+main: me.xprealm.voice.XPRealmVoicePlugin
+api-version: '26.2'
+author: KrmXP
+description: XPRealm Java + Bedrock voice bridge
+depend:
+  - voicechat
+softdepend:
+  - floodgate
+commands:
+  vc:
+    description: Open XPRealm Voice Chat controls
+    usage: /vc
+permissions:
+  xprealmvoice.use:
+    default: true

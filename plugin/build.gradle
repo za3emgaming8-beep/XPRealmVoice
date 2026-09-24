@@ -1,0 +1,32 @@
+plugins {
+    id 'java'
+}
+
+group = 'me.xprealm'
+version = '0.1.0'
+
+description = 'XPRealm cross-platform voice bridge'
+
+repositories {
+    maven { url = 'https://repo.papermc.io/repository/maven-public/' }
+    maven { url = 'https://maven.maxhenkel.de/repository/public' }
+    maven { url = 'https://repo.opencollab.dev/maven-releases/' }
+    maven { url = 'https://repo.opencollab.dev/maven-snapshots/' }
+}
+
+dependencies {
+    compileOnly 'io.papermc.paper:paper-api:26.2.build.123-stable'
+    compileOnly 'de.maxhenkel.voicechat:voicechat-api:2.6.20'
+    compileOnly 'org.geysermc.floodgate:api:2.2.5-SNAPSHOT'
+    compileOnly 'org.geysermc.cumulus:cumulus:1.1.2'
+}
+
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(25)
+}
+
+processResources {
+    filesMatching('plugin.yml') {
+        expand(version: project.version)
+    }
+}

@@ -1,0 +1,14 @@
+web:
+  # Public URL that Bedrock players will open. Must be HTTPS in production.
+  public-url: "https://voice.xprealm.minecraft.how"
+
+bridge:
+  # Internal websocket URL from Paper -> Node bridge.
+  websocket-url: "ws://127.0.0.1:8080/ws/plugin"
+  api-key: "CHANGE_ME_TO_A_LONG_RANDOM_KEY"
+  # Max distance follows the Simple Voice Chat server distance when true.
+  follow-svc-distance: true
+  fallback-distance: 48.0
+
+ui:
+  title: "§bXPRealm Voice"
