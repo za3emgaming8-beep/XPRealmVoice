@@ -8,104 +8,10 @@ const API_KEY = process.env.API_KEY || 'CHANGE_ME_TO_A_LONG_RANDOM_KEY';
 const publicSessions = new Map();
 let pluginSocket = null;
 
-const copyPage = `<!DOCTYPE html>
-<html>
-<head>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>XPRealm Voice</title>
-<style>
-body {
-  margin: 0;
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: #10131a;
-  color: white;
-  font-family: Arial, sans-serif;
-}
-.card {
-  width: min(90%, 420px);
-  background: #191e28;
-  border-radius: 18px;
-  padding: 28px;
-  text-align: center;
-  box-sizing: border-box;
-}
-h1 {
-  margin-top: 0;
-}
-#link {
-  word-break: break-all;
-  background: #0e1117;
-  padding: 14px;
-  border-radius: 10px;
-  margin: 18px 0;
-  font-size: 14px;
-}
-button {
-  width: 100%;
-  border: 0;
-  border-radius: 12px;
-  padding: 15px;
-  font-size: 17px;
-  font-weight: bold;
-  background: #42a5ff;
-  color: white;
-}
-#status {
-  margin-top: 14px;
-  min-height: 20px;
-}
-</style>
-</head>
-<body>
-<div class="card">
-  <h1>🎙️ XPRealm Voice</h1>
-  <p>Your voice link is ready.</p>
-  <div id="link"></div>
-  <button id="copy">📋 Copy Link</button>
-  <div id="status"></div>
-</div>
-
-<script>
-const params = new URLSearchParams(location.search);
-const token = params.get('token');
-
-if (!token) {
-  document.getElementById('link').textContent = 'Invalid or missing token.';
-  document.getElementById('copy').style.display = 'none';
-} else {
-  const link = location.origin + '/?token=' + encodeURIComponent(token);
-  document.getElementById('link').textContent = link;
-
-  document.getElementById('copy').onclick = async () => {
-    try {
-      await navigator.clipboard.writeText(link);
-      document.getElementById('status').textContent = '✅ Copied!';
-    } catch {
-      document.getElementById('status').textContent =
-        'Copy was blocked. Select the link above and copy it manually.';
-    }
-  };
-}
-</script>
-</body>
-</html>`;
-
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
   try {
-    if (url.pathname === '/copy') {
-      res.writeHead(200, {
-        'Content-Type': 'text/html; charset=utf-8',
-        'Cache-Control': 'no-store'
-      });
-      res.end(copyPage);
-      return;
-    }
-
     let file =
       url.pathname === '/' || url.pathname.startsWith('/v/')
         ? '/index.html'
@@ -179,8 +85,14 @@ wss.on('connection', ws => {
   ws.session = publicSessions.get(ws.token);
 
   if (!ws.session) {
-    ws.close(1008, 'invalid session');
+    ws.close(1008, 'waiting for Minecraft session');
     return;
+  }
+
+  if (ws.session.browser && ws.session.browser !== ws) {
+    try {
+      ws.session.browser.close();
+    } catch {}
   }
 
   ws.session.browser = ws;
@@ -193,7 +105,9 @@ wss.on('connection', ws => {
 
   ws.on('message', data => {
     if (Buffer.isBuffer(data)) {
-      if (!pluginSocket || pluginSocket.readyState !== 1) return;
+      if (!pluginSocket || pluginSocket.readyState !== 1) {
+        return;
+      }
 
       const out = Buffer.concat([
         Buffer.from([0x03]),
@@ -231,40 +145,11 @@ function handlePluginMessage(ws, data) {
   if (Buffer.isBuffer(data)) {
     const buf = Buffer.from(data);
 
-    if (buf.length < 33) return;
-
-    if (buf[0] === 0x02) {
-      const target = uuidFromBuffer(
-        buf.subarray(1, 17)
-      );
-
-      const sender = uuidFromBuffer(
-        buf.subarray(17, 33)
-      );
-
-      const pcm = buf.subarray(33);
-
-      const session = [...publicSessions.values()]
-        .find(x => x.uuid === target);
-
-      if (
-        !session?.browser ||
-        session.browser.readyState !== 1
-      ) {
-        return;
-      }
-
-      const out = Buffer.concat([
-        Buffer.from([0x10]),
-        uuidBuffer(sender),
-        pcm
-      ]);
-
-      session.browser.send(out);
+    if (buf.length < 33) {
       return;
     }
 
-    if (buf[0] === 0x11) {
+    if (buf[0] === 0x02 || buf[0] === 0x11) {
       const target = uuidFromBuffer(
         buf.subarray(1, 17)
       );
@@ -292,7 +177,6 @@ function handlePluginMessage(ws, data) {
       ]);
 
       session.browser.send(out);
-      return;
     }
 
     return;
@@ -305,15 +189,33 @@ function handlePluginMessage(ws, data) {
       if (msg.key !== API_KEY) {
         ws.close(1008, 'bad key');
       }
+
       return;
     }
 
     if (msg.type === 'session') {
+      const existing = publicSessions.get(msg.token);
+
       publicSessions.set(msg.token, {
         uuid: msg.uuid,
         name: msg.name,
-        browser: null
+        browser: existing?.browser || null
       });
+
+      if (
+        existing?.browser &&
+        existing.browser.readyState === 1
+      ) {
+        existing.browser.session =
+          publicSessions.get(msg.token);
+
+        existing.browser.send(JSON.stringify({
+          type: 'hello',
+          uuid: msg.uuid,
+          name: msg.name
+        }));
+      }
+
       return;
     }
 
@@ -327,6 +229,7 @@ function handlePluginMessage(ws, data) {
           publicSessions.delete(token);
         }
       }
+
       return;
     }
 

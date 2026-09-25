@@ -23,6 +23,10 @@ let transmitBuffer = new Int16Array(0);
 
 const VOICE_FRAME_SIZE = 960;
 
+let reconnectTimer = null;
+let reconnectDelay = 1000;
+let manuallyStopped = false;
+
 if (!token) {
   statusEl.textContent =
     'Invalid or missing voice session.';
@@ -33,10 +37,27 @@ if (!token) {
 }
 
 function connect() {
+  if (!token || manuallyStopped) {
+    return;
+  }
+
+  if (
+    ws &&
+    (
+      ws.readyState === WebSocket.OPEN ||
+      ws.readyState === WebSocket.CONNECTING
+    )
+  ) {
+    return;
+  }
+
   const proto =
     location.protocol === 'https:'
       ? 'wss:'
       : 'ws:';
+
+  statusEl.textContent =
+    'Connecting to XPRealm Voice...';
 
   ws = new WebSocket(
     `${proto}//${location.host}/ws/client?token=${encodeURIComponent(token)}`
@@ -45,18 +66,44 @@ function connect() {
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
+    reconnectDelay = 1000;
+
     statusEl.textContent =
-      'Connected. Enable your microphone to begin.';
+      'Connected.';
+
+    sendState();
+
+    if (audioContext) {
+      audioContext.resume().catch(() => {});
+    }
+
+    playQueue();
   };
 
   ws.onclose = () => {
+    if (manuallyStopped) {
+      statusEl.textContent =
+        'Disconnected from XPRealm Voice.';
+      return;
+    }
+
     statusEl.textContent =
-      'Disconnected from XPRealm Voice.';
+      'Voice connection lost. Reconnecting...';
+
+    scheduleReconnect();
+  };
+
+  ws.onerror = () => {
+    try {
+      ws.close();
+    } catch {}
   };
 
   ws.onmessage = e => {
     if (typeof e.data === 'string') {
-      control(JSON.parse(e.data));
+      try {
+        control(JSON.parse(e.data));
+      } catch {}
     } else {
       receiveAudio(
         new Uint8Array(e.data)
@@ -65,7 +112,28 @@ function connect() {
   };
 }
 
+function scheduleReconnect() {
+  if (
+    reconnectTimer ||
+    manuallyStopped
+  ) {
+    return;
+  }
+
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connect();
+
+    reconnectDelay =
+      Math.min(
+        reconnectDelay * 2,
+        10000
+      );
+  }, reconnectDelay);
+}
+
 async function enableMic() {
+  manuallyStopped = false;
 
   if (!audioContext) {
     audioContext =
@@ -76,66 +144,70 @@ async function enableMic() {
 
   await audioContext.resume();
 
-  micStream =
-    await navigator.mediaDevices.getUserMedia({
-      audio: {
-        channelCount: 1,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
+  if (!micStream) {
+    micStream =
+      await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+
+    micSource =
+      audioContext.createMediaStreamSource(
+        micStream
+      );
+
+    processor =
+      audioContext.createScriptProcessor(
+        1024,
+        1,
+        1
+      );
+
+    processor.onaudioprocess = e => {
+      if (
+        muted ||
+        !ws ||
+        ws.readyState !== WebSocket.OPEN
+      ) {
+        return;
       }
-    });
 
-  micSource =
-    audioContext.createMediaStreamSource(
-      micStream
+      const input =
+        e.inputBuffer.getChannelData(0);
+
+      const block =
+        new Int16Array(input.length);
+
+      for (
+        let i = 0;
+        i < input.length;
+        i++
+      ) {
+        block[i] =
+          Math.max(
+            -1,
+            Math.min(1, input[i])
+          ) * 32767;
+      }
+
+      appendTransmitSamples(block);
+    };
+
+    micSource.connect(processor);
+
+    processor.connect(
+      audioContext.destination
     );
-
-  processor =
-    audioContext.createScriptProcessor(
-      1024,
-      1,
-      1
-    );
-
-  processor.onaudioprocess = e => {
-
-    if (
-      muted ||
-      !ws ||
-      ws.readyState !== 1
-    ) {
-      return;
-    }
-
-    const input =
-      e.inputBuffer.getChannelData(0);
-
-    const block =
-      new Int16Array(input.length);
-
-    for (
-      let i = 0;
-      i < input.length;
-      i++
-    ) {
-      block[i] =
-        Math.max(
-          -1,
-          Math.min(1, input[i])
-        ) * 32767;
-    }
-
-    appendTransmitSamples(block);
-  };
-
-  micSource.connect(processor);
-  processor.connect(
-    audioContext.destination
-  );
+  }
 
   statusEl.textContent =
     'Microphone enabled.';
+
+  playQueue();
 }
 
 enableBtn.onclick = () => {
@@ -167,11 +239,14 @@ deafenBtn.onclick = () => {
       ? '🔇 Undeafen'
       : '🔊 Deafen';
 
+  if (deafened) {
+    playback.length = 0;
+  }
+
   sendState();
 };
 
 function appendTransmitSamples(samples) {
-
   const combined =
     new Int16Array(
       transmitBuffer.length +
@@ -194,7 +269,6 @@ function appendTransmitSamples(samples) {
     transmitBuffer.length >=
     VOICE_FRAME_SIZE
   ) {
-
     const frame =
       transmitBuffer.slice(
         0,
@@ -211,10 +285,9 @@ function appendTransmitSamples(samples) {
 }
 
 function sendPcm(samples) {
-
   if (
     !ws ||
-    ws.readyState !== 1
+    ws.readyState !== WebSocket.OPEN
   ) {
     return;
   }
@@ -230,9 +303,8 @@ function sendPcm(samples) {
 }
 
 function sendState() {
-
   if (
-    ws?.readyState === 1
+    ws?.readyState === WebSocket.OPEN
   ) {
     ws.send(
       JSON.stringify({
@@ -245,30 +317,44 @@ function sendState() {
 }
 
 function control(msg) {
-
   if (msg.type === 'hello') {
     statusEl.textContent =
       `Connected as ${msg.name}.`;
+
+    sendState();
+    playQueue();
   }
 
   if (msg.type === 'state') {
-
     if (
       msg.muted !== undefined
     ) {
       muted = !!msg.muted;
+
+      muteBtn.textContent =
+        muted
+          ? '🎤 Unmute'
+          : '🎤 Mute';
     }
 
     if (
       msg.deafened !== undefined
     ) {
       deafened = !!msg.deafened;
+
+      deafenBtn.textContent =
+        deafened
+          ? '🔇 Undeafen'
+          : '🔊 Deafen';
+
+      if (deafened) {
+        playback.length = 0;
+      }
     }
   }
 }
 
 function receiveAudio(bytes) {
-
   if (deafened) {
     return;
   }
@@ -326,7 +412,6 @@ function receiveAudio(bytes) {
 }
 
 function playQueue() {
-
   if (
     !audioContext ||
     playback.playing
@@ -337,7 +422,6 @@ function playQueue() {
   playback.playing = true;
 
   const run = () => {
-
     if (!playback.length) {
       playback.playing = false;
       return;
@@ -396,7 +480,6 @@ function playQueue() {
 }
 
 function updatePlayers() {
-
   playersEl.innerHTML =
     [...playerNames.values()]
       .map(
@@ -407,7 +490,6 @@ function updatePlayers() {
 }
 
 function bytesToUuid(b) {
-
   const h =
     [...b]
       .map(
