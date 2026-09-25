@@ -73,23 +73,16 @@ const params = new URLSearchParams(location.search);
 const token = params.get('token');
 
 if (!token) {
-  document.getElementById('link').textContent =
-    'Invalid or missing token.';
-
+  document.getElementById('link').textContent = 'Invalid or missing token.';
   document.getElementById('copy').style.display = 'none';
 } else {
-  const link =
-    location.origin +
-    '/?token=' +
-    encodeURIComponent(token);
-
+  const link = location.origin + '/?token=' + encodeURIComponent(token);
   document.getElementById('link').textContent = link;
 
   document.getElementById('copy').onclick = async () => {
     try {
       await navigator.clipboard.writeText(link);
-      document.getElementById('status').textContent =
-        '✅ Copied!';
+      document.getElementById('status').textContent = '✅ Copied!';
     } catch {
       document.getElementById('status').textContent =
         'Copy was blocked. Select the link above and copy it manually.';
@@ -101,10 +94,7 @@ if (!token) {
 </html>`;
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(
-    req.url,
-    \`http://\${req.headers.host}\`
-  );
+  const url = new URL(req.url, `http://${req.headers.host}`);
 
   try {
     if (url.pathname === '/copy') {
@@ -112,22 +102,17 @@ const server = http.createServer(async (req, res) => {
         'Content-Type': 'text/html; charset=utf-8',
         'Cache-Control': 'no-store'
       });
-
       res.end(copyPage);
       return;
     }
 
     let file =
-      url.pathname === '/' ||
-      url.pathname.startsWith('/v/')
+      url.pathname === '/' || url.pathname.startsWith('/v/')
         ? '/index.html'
         : url.pathname;
 
     const content = await readFile(
-      new URL(
-        \`./public\${file}\`,
-        import.meta.url
-      )
+      new URL(`./public${file}`, import.meta.url)
     );
 
     const ext = file.endsWith('.js')
@@ -142,22 +127,16 @@ const server = http.createServer(async (req, res) => {
     });
 
     res.end(content);
-
   } catch {
     res.writeHead(404);
     res.end('Not found');
   }
 });
 
-const wss = new WebSocketServer({
-  noServer: true
-});
+const wss = new WebSocketServer({ noServer: true });
 
 server.on('upgrade', (req, socket, head) => {
-  const url = new URL(
-    req.url,
-    \`http://\${req.headers.host}\`
-  );
+  const url = new URL(req.url, `http://${req.headers.host}`);
 
   if (
     url.pathname !== '/ws/plugin' &&
@@ -167,27 +146,20 @@ server.on('upgrade', (req, socket, head) => {
     return;
   }
 
-  wss.handleUpgrade(
-    req,
-    socket,
-    head,
-    ws => {
-      ws.role =
-        url.pathname === '/ws/plugin'
-          ? 'plugin'
-          : 'client';
+  wss.handleUpgrade(req, socket, head, ws => {
+    ws.role = url.pathname === '/ws/plugin'
+      ? 'plugin'
+      : 'client';
 
-      ws.token =
-        url.searchParams.get('token') ||
-        url.pathname.split('/')[2];
+    ws.token =
+      url.searchParams.get('token') ||
+      url.pathname.split('/')[2];
 
-      wss.emit('connection', ws, req);
-    }
-  );
+    wss.emit('connection', ws, req);
+  });
 });
 
 wss.on('connection', ws => {
-
   if (ws.role === 'plugin') {
     pluginSocket = ws;
 
@@ -220,15 +192,8 @@ wss.on('connection', ws => {
   }));
 
   ws.on('message', data => {
-
     if (Buffer.isBuffer(data)) {
-
-      if (
-        !pluginSocket ||
-        pluginSocket.readyState !== 1
-      ) {
-        return;
-      }
+      if (!pluginSocket || pluginSocket.readyState !== 1) return;
 
       const out = Buffer.concat([
         Buffer.from([0x03]),
@@ -237,29 +202,21 @@ wss.on('connection', ws => {
       ]);
 
       pluginSocket.send(out);
-
       return;
     }
 
     try {
-      const msg = JSON.parse(
-        data.toString()
-      );
+      const msg = JSON.parse(data.toString());
 
       if (
         msg.type === 'browser_state' &&
         pluginSocket?.readyState === 1
       ) {
-        pluginSocket.send(
-          JSON.stringify({
-            type: 'browser_state',
-            uuid: ws.session.uuid,
-            muted: !!msg.muted,
-            deafened: !!msg.deafened
-          })
-        );
+        pluginSocket.send(JSON.stringify({
+          ...msg,
+          uuid: ws.session.uuid
+        }));
       }
-
     } catch {}
   });
 
@@ -271,44 +228,24 @@ wss.on('connection', ws => {
 });
 
 function handlePluginMessage(ws, data) {
-
   if (Buffer.isBuffer(data)) {
-
     const buf = Buffer.from(data);
 
-    if (buf.length < 1) {
-      return;
-    }
+    if (buf.length < 33) return;
 
-    const type = buf[0];
+    if (buf[0] === 0x02) {
+      const target = uuidFromBuffer(
+        buf.subarray(1, 17)
+      );
 
-    /*
-     * JAVA -> BEDROCK
-     *
-     * [0x10][target UUID][sender UUID][PCM]
-     */
-    if (type === 0x10) {
+      const sender = uuidFromBuffer(
+        buf.subarray(17, 33)
+      );
 
-      if (buf.length < 33) {
-        return;
-      }
+      const pcm = buf.subarray(33);
 
-      const target =
-        uuidFromBuffer(
-          buf.subarray(1, 17)
-        );
-
-      const sender =
-        uuidFromBuffer(
-          buf.subarray(17, 33)
-        );
-
-      const pcm =
-        buf.subarray(33);
-
-      const session =
-        [...publicSessions.values()]
-          .find(x => x.uuid === target);
+      const session = [...publicSessions.values()]
+        .find(x => x.uuid === target);
 
       if (
         !session?.browser ||
@@ -324,37 +261,22 @@ function handlePluginMessage(ws, data) {
       ]);
 
       session.browser.send(out);
-
       return;
     }
 
-    /*
-     * BEDROCK -> BEDROCK
-     *
-     * [0x11][target UUID][sender UUID][PCM]
-     */
-    if (type === 0x11) {
+    if (buf[0] === 0x11) {
+      const target = uuidFromBuffer(
+        buf.subarray(1, 17)
+      );
 
-      if (buf.length < 33) {
-        return;
-      }
+      const sender = uuidFromBuffer(
+        buf.subarray(17, 33)
+      );
 
-      const target =
-        uuidFromBuffer(
-          buf.subarray(1, 17)
-        );
+      const pcm = buf.subarray(33);
 
-      const sender =
-        uuidFromBuffer(
-          buf.subarray(17, 33)
-        );
-
-      const pcm =
-        buf.subarray(33);
-
-      const session =
-        [...publicSessions.values()]
-          .find(x => x.uuid === target);
+      const session = [...publicSessions.values()]
+        .find(x => x.uuid === target);
 
       if (
         !session?.browser ||
@@ -370,7 +292,6 @@ function handlePluginMessage(ws, data) {
       ]);
 
       session.browser.send(out);
-
       return;
     }
 
@@ -378,48 +299,27 @@ function handlePluginMessage(ws, data) {
   }
 
   try {
-
-    const msg = JSON.parse(
-      data.toString()
-    );
+    const msg = JSON.parse(data.toString());
 
     if (msg.type === 'plugin_auth') {
-
       if (msg.key !== API_KEY) {
-        ws.close(
-          1008,
-          'bad key'
-        );
-
-        return;
+        ws.close(1008, 'bad key');
       }
-
       return;
     }
 
     if (msg.type === 'session') {
-
-      publicSessions.set(
-        msg.token,
-        {
-          uuid: msg.uuid,
-          name: msg.name,
-          browser: null
-        }
-      );
-
+      publicSessions.set(msg.token, {
+        uuid: msg.uuid,
+        name: msg.name,
+        browser: null
+      });
       return;
     }
 
     if (msg.type === 'close_session') {
-
-      for (
-        const [token, session]
-        of publicSessions
-      ) {
-
+      for (const [token, session] of publicSessions) {
         if (session.uuid === msg.uuid) {
-
           try {
             session.browser?.close();
           } catch {}
@@ -427,23 +327,15 @@ function handlePluginMessage(ws, data) {
           publicSessions.delete(token);
         }
       }
-
       return;
     }
 
     if (msg.type === 'state') {
+      const session = [...publicSessions.values()]
+        .find(x => x.uuid === msg.uuid);
 
-      const session =
-        [...publicSessions.values()]
-          .find(x => x.uuid === msg.uuid);
-
-      session?.browser?.send(
-        JSON.stringify(msg)
-      );
-
-      return;
+      session?.browser?.send(JSON.stringify(msg));
     }
-
   } catch {}
 }
 
@@ -460,11 +352,8 @@ function uuidFromBuffer(buf) {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
 
-server.listen(
-  PORT,
-  () => {
-    console.log(
-      \`XPRealmVoice web bridge listening on :\${PORT}\`
-    );
-  }
-);
+server.listen(PORT, () => {
+  console.log(
+    `XPRealmVoice web bridge listening on :${PORT}`
+  );
+});
