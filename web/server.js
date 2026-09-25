@@ -1,19 +1,25 @@
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { WebSocketServer } from 'ws';
+import { WebSocketServer, WebSocket } from 'ws';
 
 const PORT = Number(process.env.PORT || 8080);
-const API_KEY = process.env.API_KEY || 'CHANGE_ME_TO_A_LONG_RANDOM_KEY';
+const API_KEY =
+  process.env.API_KEY || 'CHANGE_ME_TO_A_LONG_RANDOM_KEY';
 
 const publicSessions = new Map();
+
 let pluginSocket = null;
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
+  const url = new URL(
+    req.url,
+    `http://${req.headers.host}`
+  );
 
   try {
     let file =
-      url.pathname === '/' || url.pathname.startsWith('/v/')
+      url.pathname === '/' ||
+      url.pathname.startsWith('/v/')
         ? '/index.html'
         : url.pathname;
 
@@ -39,10 +45,23 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({
+  noServer: true,
+  perMessageDeflate: false
+});
 
 server.on('upgrade', (req, socket, head) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
+  let url;
+
+  try {
+    url = new URL(
+      req.url,
+      `http://${req.headers.host}`
+    );
+  } catch {
+    socket.destroy();
+    return;
+  }
 
   if (
     url.pathname !== '/ws/plugin' &&
@@ -52,193 +71,406 @@ server.on('upgrade', (req, socket, head) => {
     return;
   }
 
-  wss.handleUpgrade(req, socket, head, ws => {
-    ws.role = url.pathname === '/ws/plugin'
-      ? 'plugin'
-      : 'client';
+  wss.handleUpgrade(
+    req,
+    socket,
+    head,
+    ws => {
+      ws.role =
+        url.pathname === '/ws/plugin'
+          ? 'plugin'
+          : 'client';
 
-    ws.token =
-      url.searchParams.get('token') ||
-      url.pathname.split('/')[2];
+      ws.token =
+        url.searchParams.get('token') || '';
 
-    wss.emit('connection', ws, req);
-  });
+      ws.isAlive = true;
+
+      wss.emit(
+        'connection',
+        ws,
+        req
+      );
+    }
+  );
 });
 
 wss.on('connection', ws => {
+  ws.isAlive = true;
+
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
+
   if (ws.role === 'plugin') {
-    pluginSocket = ws;
-
-    ws.on('message', data => {
-      handlePluginMessage(ws, data);
-    });
-
-    ws.on('close', () => {
-      if (pluginSocket === ws) {
-        pluginSocket = null;
-      }
-    });
-
-    return;
+    handlePluginConnection(ws);
+  } else {
+    handleClientConnection(ws);
   }
+});
 
-  ws.session = publicSessions.get(ws.token);
-
-  if (!ws.session) {
-    ws.close(1008, 'waiting for Minecraft session');
-    return;
-  }
-
-  if (ws.session.browser && ws.session.browser !== ws) {
+function handlePluginConnection(ws) {
+  if (
+    pluginSocket &&
+    pluginSocket !== ws &&
+    pluginSocket.readyState === WebSocket.OPEN
+  ) {
     try {
-      ws.session.browser.close();
+      pluginSocket.close(
+        1000,
+        'replaced by newer plugin connection'
+      );
     } catch {}
   }
 
-  ws.session.browser = ws;
+  pluginSocket = ws;
 
-  ws.send(JSON.stringify({
-    type: 'hello',
-    uuid: ws.session.uuid,
-    name: ws.session.name
-  }));
+  console.log(
+    'Minecraft plugin WebSocket connected.'
+  );
 
   ws.on('message', data => {
-    if (Buffer.isBuffer(data)) {
-      if (!pluginSocket || pluginSocket.readyState !== 1) {
-        return;
-      }
-
-      const out = Buffer.concat([
-        Buffer.from([0x03]),
-        uuidBuffer(ws.session.uuid),
-        data
-      ]);
-
-      pluginSocket.send(out);
-      return;
-    }
-
-    try {
-      const msg = JSON.parse(data.toString());
-
-      if (
-        msg.type === 'browser_state' &&
-        pluginSocket?.readyState === 1
-      ) {
-        pluginSocket.send(JSON.stringify({
-          ...msg,
-          uuid: ws.session.uuid
-        }));
-      }
-    } catch {}
+    handlePluginMessage(data);
   });
 
   ws.on('close', () => {
-    if (ws.session?.browser === ws) {
+    if (pluginSocket === ws) {
+      pluginSocket = null;
+    }
+
+    console.log(
+      'Minecraft plugin WebSocket disconnected.'
+    );
+  });
+
+  ws.on('error', error => {
+    console.log(
+      'Plugin WebSocket error:',
+      error.message
+    );
+  });
+}
+
+function handleClientConnection(ws) {
+  const session =
+    publicSessions.get(ws.token);
+
+  if (!session) {
+    ws.close(
+      1008,
+      'waiting for Minecraft session'
+    );
+    return;
+  }
+
+  if (
+    session.browser &&
+    session.browser !== ws
+  ) {
+    try {
+      session.browser.close(
+        1000,
+        'replaced by newer browser connection'
+      );
+    } catch {}
+  }
+
+  session.browser = ws;
+  ws.session = session;
+
+  console.log(
+    `Browser connected for ${session.name}.`
+  );
+
+  sendJson(
+    ws,
+    {
+      type: 'hello',
+      uuid: session.uuid,
+      name: session.name
+    }
+  );
+
+  ws.on('message', data => {
+    handleClientMessage(ws, data);
+  });
+
+  ws.on('close', () => {
+    if (
+      ws.session &&
+      ws.session.browser === ws
+    ) {
       ws.session.browser = null;
     }
+
+    console.log(
+      `Browser disconnected for ${session.name}.`
+    );
   });
-});
 
-function handlePluginMessage(ws, data) {
+  ws.on('error', error => {
+    console.log(
+      'Browser WebSocket error:',
+      error.message
+    );
+  });
+}
+
+function handleClientMessage(ws, data) {
+  if (!ws.session) {
+    return;
+  }
+
   if (Buffer.isBuffer(data)) {
-    const buf = Buffer.from(data);
+    const plugin = pluginSocket;
 
-    if (buf.length < 33) {
+    if (
+      !plugin ||
+      plugin.readyState !== WebSocket.OPEN
+    ) {
       return;
     }
 
-    if (buf[0] === 0x02 || buf[0] === 0x11) {
-      const target = uuidFromBuffer(
-        buf.subarray(1, 17)
-      );
+    const out = Buffer.concat([
+      Buffer.from([0x03]),
+      uuidBuffer(ws.session.uuid),
+      data
+    ]);
 
-      const sender = uuidFromBuffer(
-        buf.subarray(17, 33)
-      );
-
-      const pcm = buf.subarray(33);
-
-      const session = [...publicSessions.values()]
-        .find(x => x.uuid === target);
-
-      if (
-        !session?.browser ||
-        session.browser.readyState !== 1
-      ) {
-        return;
-      }
-
-      const out = Buffer.concat([
-        Buffer.from([0x10]),
-        uuidBuffer(sender),
-        pcm
-      ]);
-
-      session.browser.send(out);
-    }
-
+    try {
+      plugin.send(out);
+    } catch {}
     return;
   }
 
   try {
-    const msg = JSON.parse(data.toString());
+    const msg =
+      JSON.parse(data.toString());
+
+    if (
+      msg.type === 'browser_state'
+    ) {
+      const plugin = pluginSocket;
+
+      if (
+        plugin &&
+        plugin.readyState === WebSocket.OPEN
+      ) {
+        sendJson(
+          plugin,
+          {
+            ...msg,
+            uuid: ws.session.uuid
+          }
+        );
+      }
+    }
+  } catch {}
+}
+
+function handlePluginMessage(data) {
+  if (Buffer.isBuffer(data)) {
+    handlePluginBinary(data);
+    return;
+  }
+
+  try {
+    const msg =
+      JSON.parse(data.toString());
 
     if (msg.type === 'plugin_auth') {
       if (msg.key !== API_KEY) {
-        ws.close(1008, 'bad key');
+        console.log(
+          'Plugin authentication failed.'
+        );
+
+        if (pluginSocket) {
+          pluginSocket.close(
+            1008,
+            'bad key'
+          );
+        }
+
+        return;
       }
+
+      console.log(
+        'Minecraft plugin authenticated.'
+      );
 
       return;
     }
 
     if (msg.type === 'session') {
-      const existing = publicSessions.get(msg.token);
-
-      publicSessions.set(msg.token, {
-        uuid: msg.uuid,
-        name: msg.name,
-        browser: existing?.browser || null
-      });
-
-      if (
-        existing?.browser &&
-        existing.browser.readyState === 1
-      ) {
-        existing.browser.session =
-          publicSessions.get(msg.token);
-
-        existing.browser.send(JSON.stringify({
-          type: 'hello',
-          uuid: msg.uuid,
-          name: msg.name
-        }));
-      }
-
+      updateSession(msg);
       return;
     }
 
     if (msg.type === 'close_session') {
-      for (const [token, session] of publicSessions) {
-        if (session.uuid === msg.uuid) {
-          try {
-            session.browser?.close();
-          } catch {}
-
-          publicSessions.delete(token);
-        }
-      }
-
+      closeSession(msg.uuid);
       return;
     }
 
     if (msg.type === 'state') {
-      const session = [...publicSessions.values()]
-        .find(x => x.uuid === msg.uuid);
-
-      session?.browser?.send(JSON.stringify(msg));
+      sendStateToBrowser(msg);
+      return;
     }
+  } catch {}
+}
+
+function updateSession(msg) {
+  if (
+    !msg.token ||
+    !msg.uuid ||
+    !msg.name
+  ) {
+    return;
+  }
+
+  const existing =
+    publicSessions.get(msg.token);
+
+  const session = {
+    uuid: msg.uuid,
+    name: msg.name,
+    browser:
+      existing?.browser || null
+  };
+
+  publicSessions.set(
+    msg.token,
+    session
+  );
+
+  if (
+    session.browser &&
+    session.browser.readyState === WebSocket.OPEN
+  ) {
+    session.browser.session =
+      session;
+
+    sendJson(
+      session.browser,
+      {
+        type: 'hello',
+        uuid: session.uuid,
+        name: session.name
+      }
+    );
+  }
+
+  console.log(
+    `Session registered: ${msg.name}`
+  );
+}
+
+function closeSession(uuid) {
+  for (
+    const [token, session]
+    of publicSessions
+  ) {
+    if (session.uuid !== uuid) {
+      continue;
+    }
+
+    try {
+      session.browser?.close(
+        1000,
+        'voice session closed'
+      );
+    } catch {}
+
+    publicSessions.delete(token);
+
+    console.log(
+      `Session closed: ${session.name}`
+    );
+  }
+}
+
+function sendStateToBrowser(msg) {
+  const session =
+    [...publicSessions.values()]
+      .find(
+        x => x.uuid === msg.uuid
+      );
+
+  if (
+    session?.browser &&
+    session.browser.readyState === WebSocket.OPEN
+  ) {
+    sendJson(
+      session.browser,
+      msg
+    );
+  }
+}
+
+function handlePluginBinary(data) {
+  const buf = Buffer.from(data);
+
+  if (buf.length < 33) {
+    return;
+  }
+
+  const type = buf[0];
+
+  if (
+    type !== 0x02 &&
+    type !== 0x11
+  ) {
+    return;
+  }
+
+  const target =
+    uuidFromBuffer(
+      buf.subarray(1, 17)
+    );
+
+  const sender =
+    uuidFromBuffer(
+      buf.subarray(17, 33)
+    );
+
+  const pcm =
+    buf.subarray(33);
+
+  const session =
+    [...publicSessions.values()]
+      .find(
+        x => x.uuid === target
+      );
+
+  if (
+    !session?.browser ||
+    session.browser.readyState !== WebSocket.OPEN
+  ) {
+    return;
+  }
+
+  const out = Buffer.concat([
+    Buffer.from([0x10]),
+    uuidBuffer(sender),
+    pcm
+  ]);
+
+  try {
+    session.browser.send(out);
+  } catch {}
+}
+
+function sendJson(ws, object) {
+  if (
+    !ws ||
+    ws.readyState !== WebSocket.OPEN
+  ) {
+    return;
+  }
+
+  try {
+    ws.send(
+      JSON.stringify(object)
+    );
   } catch {}
 }
 
@@ -250,13 +482,83 @@ function uuidBuffer(uuid) {
 }
 
 function uuidFromBuffer(buf) {
-  const h = buf.toString('hex');
+  const h =
+    buf.toString('hex');
 
-  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+  return (
+    `${h.slice(0, 8)}-` +
+    `${h.slice(8, 12)}-` +
+    `${h.slice(12, 16)}-` +
+    `${h.slice(16, 20)}-` +
+    `${h.slice(20)}`
+  );
 }
 
-server.listen(PORT, () => {
-  console.log(
-    `XPRealmVoice web bridge listening on :${PORT}`
+/*
+ * Keep WebSocket connections alive.
+ *
+ * Render/proxies may terminate connections
+ * that appear idle. Ping every 20 seconds.
+ */
+const heartbeatTimer =
+  setInterval(() => {
+    for (const ws of wss.clients) {
+      if (ws.isAlive === false) {
+        try {
+          ws.terminate();
+        } catch {}
+
+        continue;
+      }
+
+      ws.isAlive = false;
+
+      try {
+        ws.ping();
+      } catch {}
+    }
+  }, 20000);
+
+heartbeatTimer.unref();
+
+server.on('error', error => {
+  console.error(
+    'HTTP server error:',
+    error
   );
 });
+
+process.on('SIGTERM', () => {
+  clearInterval(heartbeatTimer);
+
+  for (const ws of wss.clients) {
+    try {
+      ws.close(
+        1001,
+        'server shutting down'
+      );
+    } catch {}
+  }
+
+  server.close(() => {
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  clearInterval(heartbeatTimer);
+
+  server.close(() => {
+    process.exit(0);
+  });
+});
+
+server.listen(
+  PORT,
+  '0.0.0.0',
+  () => {
+    console.log(
+      `XPRealmVoice web bridge listening on :${PORT}`
+    );
+  }
+);
